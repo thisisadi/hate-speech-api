@@ -23,6 +23,27 @@ THRESHOLDS = {
 NUM_FEATURES = 10000
 BASE_DIR = os.path.dirname(__file__)
 
+# Common profanity that L1 regularization zeroed out but should always be flagged
+PROFANITY = {
+    'fuck', 'fucking', 'fucked', 'fucker', 'fucks',
+    'shit', 'shitting', 'bullshit',
+    'bitch', 'bitches', 'bitching',
+    'cunt', 'cunts',
+    'asshole', 'assholes', 'ass',
+    'bastard', 'bastards',
+    'whore', 'whores',
+    'slut', 'sluts',
+    'dick', 'dicks', 'cock', 'cocks',
+    'pussy', 'pussies',
+    'faggot', 'faggots', 'fag',
+    'retard', 'retarded',
+    'nigger', 'nigga',
+    'motherfucker', 'motherfucking',
+    'cocksucker', 'dipshit', 'dumbass',
+    'jackass', 'moron', 'imbecile',
+    'prick', 'twat', 'wanker',
+}
+
 logger.info("Loading model weights...")
 with open(os.path.join(BASE_DIR, "model_weights.json")) as f:
     raw = json.load(f)
@@ -103,11 +124,23 @@ def sigmoid(x: float) -> float:
     return 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
 
 
+def check_profanity(text: str) -> list:
+    """Returns list of profanity-triggered categories."""
+    words = set(re.split(r'\W+', text.lower()))
+    hits = words & PROFANITY
+    if hits:
+        return ["toxic", "obscene", "insult"]
+    return []
+
+
 def predict(comment: str) -> dict:
     tokens = preprocess(comment)
     tf = hashing_tf(tokens)
+
     scores = {}
-    flagged = []
+    flagged = set()
+
+    # ML model predictions
     for label in LABELS:
         w = WEIGHTS[label]
         tfidf = tf * w["idf"]
@@ -121,12 +154,23 @@ def predict(comment: str) -> dict:
             "flagged":     is_flagged,
         }
         if is_flagged:
-            flagged.append(label)
+            flagged.add(label)
+
+    # Profanity override — catches words L1 regularization zeroed out
+    profanity_flags = check_profanity(comment)
+    for label in profanity_flags:
+        flagged.add(label)
+        if not scores[label]["flagged"]:
+            scores[label]["flagged"] = True
+            scores[label]["flagged_by"] = "profanity_filter"
+
+    flagged_list = [l for l in LABELS if l in flagged]
+
     return {
         "comment":            comment,
         "cleaned":            " ".join(tokens),
-        "is_toxic":           bool(len(flagged) > 0),
-        "flagged_categories": flagged,
+        "is_toxic":           bool(len(flagged_list) > 0),
+        "flagged_categories": flagged_list,
         "scores":             scores,
     }
 
@@ -137,8 +181,8 @@ def health():
         "status":        "ok",
         "service":       "Hate Speech Detection API",
         "models_loaded": LABELS,
-        "version":       "2.1.0",
-        "backend":       "numpy + Spark-compatible MurmurHash3",
+        "version":       "2.2.0",
+        "backend":       "numpy + Spark MurmurHash3 + profanity filter",
     })
 
 

@@ -1,9 +1,9 @@
 import os
 import re
 import json
+import struct
 import logging
 import numpy as np
-import mmh3
 from flask import Flask, request, jsonify
 
 logging.basicConfig(level=logging.INFO)
@@ -11,9 +11,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-LABELS = ["toxic", "severe_toxic", "obscene",
-          "threat", "insult", "identity_hate"]
+LABELS = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
 THRESHOLDS = {
     "toxic":         0.50,
     "severe_toxic":  0.80,
@@ -25,7 +23,6 @@ THRESHOLDS = {
 NUM_FEATURES = 10000
 BASE_DIR = os.path.dirname(__file__)
 
-# ── Load weights and stop words once at startup ───────────────────────────────
 logger.info("Loading model weights...")
 with open(os.path.join(BASE_DIR, "model_weights.json")) as f:
     raw = json.load(f)
@@ -45,15 +42,48 @@ with open(os.path.join(BASE_DIR, "stopwords.json")) as f:
 logger.info(f"Loaded {len(WEIGHTS)} models. API ready.")
 
 
-# ── Inference (pure Python + numpy, no JVM) ───────────────────────────────────
+def murmur3_32(data: str, seed: int = 42) -> int:
+    """Spark-compatible MurmurHash3 (Guava impl, seed=42)."""
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    length = len(data)
+    h = seed
+    nblocks = length // 4
+    for block in range(nblocks):
+        k = struct.unpack_from('<i', data, block * 4)[0]
+        k = (k * 0xcc9e2d51) & 0xFFFFFFFF
+        k = ((k << 15) | (k >> 17)) & 0xFFFFFFFF
+        k = (k * 0x1b873593) & 0xFFFFFFFF
+        h ^= k
+        h = ((h << 13) | (h >> 19)) & 0xFFFFFFFF
+        h = (h * 5 + 0xe6546b64) & 0xFFFFFFFF
+    tail = data[nblocks * 4:]
+    k = 0
+    tail_size = length & 3
+    if tail_size >= 3: k ^= tail[2] << 16
+    if tail_size >= 2: k ^= tail[1] << 8
+    if tail_size >= 1:
+        k ^= tail[0]
+        k = (k * 0xcc9e2d51) & 0xFFFFFFFF
+        k = ((k << 15) | (k >> 17)) & 0xFFFFFFFF
+        k = (k * 0x1b873593) & 0xFFFFFFFF
+        h ^= k
+    h ^= length
+    h ^= (h >> 16)
+    h = (h * 0x85ebca6b) & 0xFFFFFFFF
+    h ^= (h >> 13)
+    h = (h * 0xc2b2ae35) & 0xFFFFFFFF
+    h ^= (h >> 16)
+    if h >= 0x80000000:
+        h -= 0x100000000
+    return h
+
 
 def hash_token(token: str) -> int:
-    """Spark-compatible MurmurHash3."""
-    return abs(mmh3.hash(token, 0, signed=True)) % NUM_FEATURES
+    return abs(murmur3_32(token)) % NUM_FEATURES
 
 
 def hashing_tf(tokens: list) -> np.ndarray:
-    """Replicate Spark HashingTF(numFeatures=10000)."""
     freq = np.zeros(NUM_FEATURES, dtype=np.float64)
     for t in tokens:
         freq[hash_token(t)] += 1.0
@@ -61,7 +91,6 @@ def hashing_tf(tokens: list) -> np.ndarray:
 
 
 def preprocess(text: str) -> list:
-    """Replicate Spark pipeline: lower → strip URLs → strip non-alpha → tokenize → remove stopwords."""
     text = text.lower()
     text = re.sub(r"http\S+", "", text)
     text = re.sub(r"[^a-zA-Z\s]", " ", text)
@@ -71,42 +100,36 @@ def preprocess(text: str) -> list:
 
 
 def sigmoid(x: float) -> float:
-    return 1.0 / (1.0 + np.exp(-x))
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
 
 
 def predict(comment: str) -> dict:
     tokens = preprocess(comment)
     tf = hashing_tf(tokens)
-
     scores = {}
     flagged = []
-
     for label in LABELS:
         w = WEIGHTS[label]
         tfidf = tf * w["idf"]
         raw_score = float(np.dot(w["coef"], tfidf)) + w["intercept"]
         prob = sigmoid(raw_score)
         threshold = THRESHOLDS[label]
-        is_flagged = prob >= threshold
-
+        is_flagged = bool(prob >= threshold)
         scores[label] = {
             "probability": round(prob * 100, 2),
             "threshold":   threshold * 100,
-            "flagged":     bool(is_flagged),
+            "flagged":     is_flagged,
         }
         if is_flagged:
             flagged.append(label)
-
     return {
-        "comment":           comment,
-        "cleaned":           " ".join(tokens),
-        "is_toxic":          len(flagged) > 0,
+        "comment":            comment,
+        "cleaned":            " ".join(tokens),
+        "is_toxic":           bool(len(flagged) > 0),
         "flagged_categories": flagged,
-        "scores":            scores,
+        "scores":             scores,
     }
 
-
-# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/", methods=["GET"])
 def health():
@@ -114,8 +137,8 @@ def health():
         "status":        "ok",
         "service":       "Hate Speech Detection API",
         "models_loaded": LABELS,
-        "version":       "2.0.0",
-        "backend":       "numpy (no PySpark)",
+        "version":       "2.1.0",
+        "backend":       "numpy + Spark-compatible MurmurHash3",
     })
 
 
@@ -123,7 +146,7 @@ def health():
 def predict_post():
     data = request.get_json()
     if not data or "comment" not in data:
-        return jsonify({"error": "Missing 'comment' field in request body"}), 400
+        return jsonify({"error": "Missing 'comment' field"}), 400
     comment = data["comment"].strip()
     if not comment:
         return jsonify({"error": "Comment cannot be empty"}), 400

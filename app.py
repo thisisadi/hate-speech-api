@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-LABELS = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
+LABELS = ["toxic", "severe_toxic", "obscene",
+          "threat", "insult", "identity_hate"]
 THRESHOLDS = {
     "toxic":         0.50,
     "severe_toxic":  0.80,
@@ -91,7 +92,7 @@ def predict(comment: str) -> dict:
         scores[label] = {
             "probability": round(prob * 100, 2),
             "threshold":   threshold * 100,
-            "flagged":     is_flagged,
+            "flagged":     bool(is_flagged),
         }
         if is_flagged:
             flagged.append(label)

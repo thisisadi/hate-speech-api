@@ -57,7 +57,8 @@ def format_response(result: dict, original_text: str) -> str:
         prob = info["probability"]
         threshold = info["threshold"]
         bar = "" if info["flagged"] else ""
-        lines.append(f"  {bar} {label:<15} {prob:>6.1f}%  (threshold: {threshold:.0f}%)")
+        lines.append(
+            f"  {bar} {label:<15} {prob:>6.1f}%  (threshold: {threshold:.0f}%)")
 
     return "\n".join(lines)
 
@@ -137,26 +138,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """In group chats, only respond when bot is mentioned or replied to."""
     message = update.message
     if not message or not message.text:
         return
 
-    bot_username = context.bot.username
-    is_mentioned = f"@{bot_username}" in message.text
-    is_reply_to_bot = (
-        message.reply_to_message and
-        message.reply_to_message.from_user and
-        message.reply_to_message.from_user.username == bot_username
-    )
-
-    if not (is_mentioned or is_reply_to_bot):
-        return
-
-    # Remove the bot mention from the text before classifying
-    comment = message.text.replace(f"@{bot_username}", "").strip()
+    comment = message.text.strip()
     if not comment:
-        await message.reply_text("Please include a message to classify.")
         return
 
     await context.bot.send_chat_action(
@@ -192,7 +179,8 @@ def main():
 
     # Group chat: respond only when mentioned or replied to
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
+        filters.TEXT & ~filters.COMMAND & (
+            filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
         handle_group_message
     ))
 

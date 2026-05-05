@@ -13,8 +13,10 @@ LABELS = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate
 THRESHOLDS = {l: 0.5 for l in LABELS}
 MODEL_REPO = "thisisadi/hate-speech-roberta"
 
-logger.info(f"Loading {MODEL_REPO}...")
-tokenizer = AutoTokenizer.from_pretrained(MODEL_REPO)
+logger.info("Loading tokenizer from roberta-base...")
+tokenizer = AutoTokenizer.from_pretrained("roberta-base")
+
+logger.info(f"Loading model weights from {MODEL_REPO}...")
 model = AutoModelForSequenceClassification.from_pretrained(
     MODEL_REPO,
     torch_dtype=torch.float16
